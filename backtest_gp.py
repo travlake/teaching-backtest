@@ -15,6 +15,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
+from scipy import stats as scipy_stats
 import warnings, time
 
 warnings.filterwarnings("ignore")
@@ -45,8 +46,12 @@ def load_data():
                  "indfmt", "consol", "popsrc", "datafmt",
                  "fic", "revtq", "saleq", "cogsq", "atq", "permno"],
     )
-    crsp = pd.read_stata(DATA_DIR / CRSP_FILE)
-    ff   = pd.read_stata(DATA_DIR / FF_FILE)
+    crsp = pd.read_stata(
+        DATA_DIR / CRSP_FILE,
+        columns=["PERMNO", "date", "RET", "PRC", "SHROUT", "SHRCD"],
+    )
+    ff   = pd.read_stata(DATA_DIR / FF_FILE,
+                         columns=["dateff", "mktrf", "rf"])
     return comp, crsp, ff
 
 
@@ -78,7 +83,7 @@ def build_signal(comp):
     comp["rev"]      = comp["revtq"].fillna(comp["saleq"])          # fallback
 
     comp.dropna(subset=["permno", "rev", "cogsq", "atq"], inplace=True)
-    comp = comp[comp["atq"] > 0].copy()
+    comp = comp[comp["atq"] > 0]
     comp["gpq"] = comp["rev"] - comp["cogsq"]
 
     comp.sort_values(["gvkey", "datadate"], inplace=True)
@@ -176,9 +181,11 @@ def merge_and_form_portfolios(crsp, signal):
 def compute_portfolio_returns(merged):
     """Compute EW and VW returns for long, short, and long-short."""
     ew = merged.groupby(["month", "port"])["RET"].mean().unstack("port")
-    vw = (merged.groupby(["month", "port"])
-          .apply(lambda g: (g["lag_mktcap"] * g["RET"]).sum() / g["lag_mktcap"].sum())
-          .unstack("port"))
+    merged["wt_ret"] = merged["lag_mktcap"] * merged["RET"]
+    vw_agg = (merged.groupby(["month", "port"])[["wt_ret", "lag_mktcap"]].sum())
+    vw_agg["vw"] = vw_agg["wt_ret"] / vw_agg["lag_mktcap"]
+    vw = vw_agg["vw"].unstack("port")
+    merged.drop(columns="wt_ret", inplace=True)
 
     ew["long_short"] = ew["long"] - ew["short"]
     vw["long_short"] = vw["long"] - vw["short"]
@@ -206,7 +213,7 @@ def compute_metrics(r, name, ff_df, is_long_short=False):
     sharpe  = ann_ret / ann_vol if ann_vol > 0 else np.nan
     se_mu   = sigma / np.sqrt(n)
     t_mu    = mu / se_mu if se_mu > 0 else np.nan
-    p_mu    = 2 * (1 - __import__("scipy").stats.t.cdf(abs(t_mu), df=n-1))
+    p_mu    = 2 * (1 - scipy_stats.t.cdf(abs(t_mu), df=n-1))
     ci_lo   = ann_ret - 1.96 * sigma * np.sqrt(12 / n)
     ci_hi   = ann_ret + 1.96 * sigma * np.sqrt(12 / n)
     geo     = (1 + r).prod() ** (12 / n) - 1                    # geometric mean
@@ -305,10 +312,9 @@ def output_results(results, metrics):
     print(f"\n{sep}")
 
     # --- Save files ---
-    prefix = SIGNAL_COL
-    csv_path     = DATA_DIR / f"{prefix}_backtest_returns.csv"
-    metrics_path = DATA_DIR / f"{prefix}_backtest_metrics.csv"
-    txt_path     = DATA_DIR / f"{prefix}_backtest_metrics.txt"
+    csv_path     = DATA_DIR / f"{SIGNAL_COL}_backtest_returns.csv"
+    metrics_path = DATA_DIR / f"{SIGNAL_COL}_backtest_metrics.csv"
+    txt_path     = DATA_DIR / f"{SIGNAL_COL}_backtest_metrics.txt"
 
     results.to_csv(csv_path)
     metrics.to_csv(metrics_path)
@@ -343,7 +349,7 @@ def output_results(results, metrics):
         ax.grid(True, alpha=0.3, which="both")
 
     fig.tight_layout()
-    plot_path = DATA_DIR / f"{prefix}_backtest.png"
+    plot_path = DATA_DIR / f"{SIGNAL_COL}_backtest.png"
     fig.savefig(plot_path, dpi=150)
     print(f"  Plot saved: {plot_path}")
 
@@ -388,16 +394,16 @@ def main():
 
     print("Running CAPM regressions ...")
     series_list = [
-        ("ew_long",       "EW Long"),
-        ("ew_short",      "EW Short"),
-        ("ew_long_short", "EW Long-Short"),
-        ("vw_long",       "VW Long"),
-        ("vw_short",      "VW Short"),
-        ("vw_long_short", "VW Long-Short"),
+        ("ew_long",       "EW Long",       False),
+        ("ew_short",      "EW Short",      False),
+        ("ew_long_short", "EW Long-Short", True),
+        ("vw_long",       "VW Long",       False),
+        ("vw_short",      "VW Short",      False),
+        ("vw_long_short", "VW Long-Short", True),
     ]
     metrics = pd.DataFrame(
-        [compute_metrics(results[c], n, ff, is_long_short="long_short" in c)
-         for c, n in series_list]
+        [compute_metrics(results[c], n, ff, is_long_short=ls)
+         for c, n, ls in series_list]
     ).set_index("name")
 
     output_results(results, metrics)
