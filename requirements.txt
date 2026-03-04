@@ -3,4 +3,4 @@ numpy
 statsmodels
 matplotlib
 scipy
-pyarrow
+fastparquet

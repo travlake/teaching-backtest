@@ -19,6 +19,7 @@ Your homework assignment contains a link to a zip file. Download and unzip it �
 > "Clone [repo-url] and move the data files into the project folder."
 
 The data files you need (from the zip) are:
+
 - `compustat_with_permno.parquet` — Compustat quarterly fundamentals
 - `crsp_m.dta` — CRSP monthly stock returns
 - `ff5_plus_mom.dta` — Fama-French factors
@@ -44,6 +45,7 @@ Ask your agent:
 > "Run the backtest."
 
 The agent will execute the script and show you the results. Output includes:
+
 - A performance metrics table (returns, alpha, t-statistics, Sharpe ratios)
 - A CSV and TXT file with the metrics
 - A PNG plot of cumulative returns over time
@@ -53,9 +55,9 @@ The agent will execute the script and show you the results. Output includes:
 Review the output with your agent. You can ask things like:
 
 > "What does the CAPM alpha tell us about this strategy?"
->
+> 
 > "The long-short return is negative — does that mean I have the signal direction wrong?"
->
+> 
 > "Can you flip the signal so that low values go in the long portfolio?"
 
 ## What You'll Learn

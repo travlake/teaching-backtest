@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore")
 # =====================================================================
 STRATEGY_NAME   = "Gross Profitability"
 SIGNAL_COL      = "gp"                 # column name for the signal
-DATA_DIR        = Path(r"C:\Backtest0")
+DATA_DIR        = Path(__file__).resolve().parent
 COMP_FILE       = "compustat_with_permno.parquet"
 CRSP_FILE       = "crsp_m.dta"
 FF_FILE         = "ff5_plus_mom.dta"
@@ -42,6 +42,7 @@ def load_data():
     """Load Compustat, CRSP monthly, and Fama-French factors."""
     comp = pd.read_parquet(
         DATA_DIR / COMP_FILE,
+        engine="fastparquet",
         columns=["gvkey", "datadate", "fyearq", "fqtr",
                  "indfmt", "consol", "popsrc", "datafmt",
                  "fic", "revtq", "saleq", "cogsq", "atq", "permno"],
