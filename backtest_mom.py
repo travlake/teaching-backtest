@@ -1,12 +1,11 @@
 """
-Backtest: Book-to-Market (B/M) — Fama-French methodology
-=========================================================
-Signal : B/M = book equity (FYE in cal year t-1) / ME (December t-1)
-Long   : top decile B/M  (value stocks)
-Short  : bottom decile B/M (growth stocks)
-Rebal  : annual in June; decile membership locked July t – June t+1
-          (stocks that delist drop out naturally; VW weights update monthly)
-Universe: common US equities (SHRCD 10), lagged price > $3
+Backtest: Momentum (Prior 2-12 Month Returns)
+==============================================
+Signal : cumulative return from month t-12 to t-2 (skip most recent month)
+Long   : top decile momentum (winners)
+Short  : bottom decile momentum (losers)
+Rebal  : monthly
+Universe: common US equities (SHRCD 10/11), lagged price > $3
 Breaks : NYSE-only breakpoints, all stocks in portfolios
 """
 
@@ -25,88 +24,26 @@ warnings.filterwarnings("ignore")
 # =====================================================================
 # CONFIG
 # =====================================================================
-STRATEGY_NAME   = "Book-to-Market (FF)"
-SIGNAL_COL      = "bm_ff"
+STRATEGY_NAME   = "Momentum (2-12)"
+SIGNAL_COL      = "mom"
 DATA_DIR        = Path(__file__).resolve().parent
-COMP_FILE       = "compustat_with_permno.parquet"
 CRSP_FILE       = "crsp_m.parquet"
 FF_FILE         = "ff5_plus_mom.dta"
 MIN_PRICE       = 3
 N_QUANTILES     = 10
 PLOT_DPI        = 200
+MOM_START       = 12       # start of lookback window (months ago)
+MOM_END         = 2        # end of lookback window (months ago); skips most recent month
 
 
 # =====================================================================
 # LOAD DATA
 # =====================================================================
 def load_data():
-    """Load Compustat, CRSP monthly, and Fama-French factors."""
-    comp = pd.read_parquet(
-        DATA_DIR / COMP_FILE,
-        engine="fastparquet",
-        columns=["gvkey", "datadate", "fyearq", "fqtr",
-                 "indfmt", "consol", "popsrc", "datafmt",
-                 "fic", "ceqq", "atq", "ltq", "permno"],
-    )
+    """Load CRSP monthly and Fama-French factors."""
     crsp = pd.read_parquet(DATA_DIR / CRSP_FILE, engine="fastparquet")
     ff   = pd.read_stata(DATA_DIR / FF_FILE, columns=["dateff", "mktrf", "rf"])
-    return comp, crsp, ff
-
-
-# =====================================================================
-# BUILD ANNUAL B/M SIGNAL (FF methodology)
-# =====================================================================
-def build_signal(comp, dec_me):
-    """
-    FF-style B/M signal.
-
-    For portfolios formed June of year t:
-      - Book equity: last fiscal year-end (fqtr==4) with datadate in calendar
-        year t-1.  ceqq with atq - ltq fallback.  Require BE > 0.
-      - Market equity: CRSP mktcap in December of year t-1.
-      - B/M = BE / ME_dec
-
-    Returns DataFrame: [PERMNO, form_year, bm_ff]
-      where form_year = t (portfolios held July t – June t+1).
-    """
-    # Standard Compustat filters
-    comp = comp[
-        (comp["indfmt"] == "INDL") & (comp["consol"] == "C") &
-        (comp["popsrc"] == "D")    & (comp["datafmt"] == "STD") &
-        (comp["fic"] == "USA")
-    ].copy()
-
-    comp["datadate"] = pd.to_datetime(comp["datadate"])
-    comp["permno"]   = comp["permno"].astype("Int64")
-
-    # Keep only fiscal year-end quarters
-    comp = comp[comp["fqtr"] == 4].copy()
-
-    # Book equity
-    comp["beq"] = comp["ceqq"].fillna(comp["atq"] - comp["ltq"])
-    comp.dropna(subset=["permno", "beq"], inplace=True)
-    comp = comp[comp["beq"] > 0]
-
-    comp.sort_values(["permno", "datadate"], inplace=True)
-    comp.drop_duplicates(subset=["permno", "datadate"], keep="last", inplace=True)
-
-    # Calendar year of fiscal year-end → portfolios formed in June of next year
-    comp["cal_year"] = comp["datadate"].dt.year      # FYE in cal year t-1
-    comp["form_year"] = comp["cal_year"] + 1          # portfolios formed June t
-
-    # Keep most recent FYE per firm per calendar year
-    comp.sort_values(["permno", "cal_year", "datadate"], inplace=True)
-    comp.drop_duplicates(subset=["permno", "cal_year"], keep="last", inplace=True)
-
-    comp["PERMNO"] = comp["permno"].astype(int)
-
-    # Merge with December ME of cal year t-1
-    comp = comp.merge(dec_me, left_on=["PERMNO", "cal_year"],
-                      right_on=["PERMNO", "dec_year"], how="inner")
-
-    comp[SIGNAL_COL] = comp["beq"] / comp["me_dec"]
-
-    return comp[["PERMNO", "form_year", SIGNAL_COL]].copy()
+    return crsp, ff
 
 
 # =====================================================================
@@ -135,27 +72,52 @@ def clean_crsp(crsp):
 
 
 # =====================================================================
-# ASSIGN PORTFOLIOS (annual June formation, locked membership)
+# BUILD MOMENTUM SIGNAL
 # =====================================================================
-def assign_portfolios(sig, crsp):
+def build_signal(crsp):
     """
-    In June of each year t, assign stocks to deciles using NYSE B/M breaks.
-    Carry assignments forward July t – June t+1.
-    Merge with CRSP returns; delisted stocks drop out naturally.
+    Compute prior 2-12 month cumulative return for each stock-month.
+
+    For month t, the signal is the cumulative return from t-12 to t-2
+    (i.e., skip the most recent month t-1 to avoid short-term reversal).
+
+    Requires at least (MOM_START - MOM_END + 1) = 11 valid returns in
+    the lookback window.
     """
-    # Map each return month to its formation year:
-    # July t → June t+1  ⟶ form_year = t
+    crsp = crsp.sort_values(["PERMNO", "month"]).copy()
+
+    # Compute cumulative return over rolling window
+    # cum_ret_12 = cumulative return from t-12 to t-1 (12 months)
+    # cum_ret_1  = return in t-1 (most recent month)
+    # momentum   = (1 + cum_ret_12) / (1 + cum_ret_1) - 1
+    n_months = MOM_START  # need 12 months of returns
+
+    crsp["log_ret"] = np.log(1 + crsp["RET"])
+    crsp["cum_log_12"] = crsp.groupby("PERMNO")["log_ret"].transform(
+        lambda x: x.shift(1).rolling(n_months, min_periods=n_months).sum()
+    )
+    crsp["log_ret_1"] = crsp.groupby("PERMNO")["log_ret"].shift(1)
+
+    # Prior 2-12: subtract most recent month from the full 12-month window
+    crsp["cum_log_2_12"] = crsp["cum_log_12"] - crsp["log_ret_1"]
+    crsp[SIGNAL_COL] = np.exp(crsp["cum_log_2_12"]) - 1
+
+    crsp.dropna(subset=[SIGNAL_COL], inplace=True)
+    crsp.drop(columns=["log_ret", "cum_log_12", "log_ret_1", "cum_log_2_12"],
+              inplace=True)
+    return crsp
+
+
+# =====================================================================
+# ASSIGN PORTFOLIOS (monthly, NYSE breakpoints)
+# =====================================================================
+def assign_portfolios(crsp):
+    """
+    Each month, assign stocks to deciles using NYSE momentum breakpoints.
+    """
     crsp = crsp.copy()
-    m = crsp["month"].dt.month
-    y = crsp["month"].dt.year
-    crsp["form_year"] = np.where(m >= 7, y, y - 1)
+    crsp.dropna(subset=["RET", SIGNAL_COL, "lag_mktcap"], inplace=True)
 
-    # Merge signal onto CRSP by (PERMNO, form_year)
-    merged = crsp.merge(sig, on=["PERMNO", "form_year"], how="inner")
-    merged.dropna(subset=["RET", SIGNAL_COL, "lag_mktcap"], inplace=True)
-
-    # In June of each form_year, compute NYSE breakpoints from the signal
-    # Then apply those same breaks to all 12 months of that vintage
     def _assign_decile(group):
         nyse = group[group["EXCHCD"] == 1][SIGNAL_COL]
         if len(nyse) < N_QUANTILES:
@@ -169,7 +131,7 @@ def assign_portfolios(sig, crsp):
         ) + 1
         return group
 
-    merged = merged.groupby("form_year", group_keys=False).apply(_assign_decile)
+    merged = crsp.groupby("month", group_keys=False).apply(_assign_decile)
     merged.dropna(subset=["decile"], inplace=True)
     merged["decile"] = merged["decile"].astype(int)
     merged["port"] = np.where(merged["decile"] == N_QUANTILES, "long",
@@ -267,10 +229,10 @@ def compute_metrics(r, name, ff_df, is_long_short=False):
 
 
 # =====================================================================
-# OUTPUT (console, CSV, TXT, plot)
+# OUTPUT (console, CSV, TXT)
 # =====================================================================
 def output_results(results, metrics):
-    """Print formatted tables, save CSV/TXT, generate plot."""
+    """Print formatted tables, save CSV/TXT."""
     def fmt_table(m):
         out = pd.DataFrame(index=m.index)
         out["Period"]        = m["start"] + " to " + m["end"]
@@ -300,11 +262,10 @@ def output_results(results, metrics):
     sep = "=" * 100
     header = (f"\n{sep}\n"
               f"{STRATEGY_NAME.upper()} BACKTEST\n"
-              f"Signal: BE(FYE in t-1) / ME(Dec t-1)   |   "
-              f"Formation: June of year t\n"
+              f"Signal: cumulative return months t-{MOM_START} to t-{MOM_END}   |   "
+              f"Rebal: monthly\n"
               f"Universe: SHRCD 10/11, lagged |PRC| > ${MIN_PRICE}   |   "
-              f"Breakpoints: NYSE {N_QUANTILES}-tiles   |   "
-              f"Rebal: annual (hold July t – June t+1)\n"
+              f"Breakpoints: NYSE {N_QUANTILES}-tiles\n"
               f"{sep}")
 
     print(header)
@@ -337,25 +298,16 @@ def output_results(results, metrics):
 # PLOTTING
 # =====================================================================
 def plot_cumulative(results, pfx, title, path, start=None, end=None):
-    """
-    Single-panel cumulative return plot for slides (2.5:1 aspect ratio).
-
-    Args:
-        results: DataFrame with columns like ew_long, ew_short, ew_long_short
-        pfx: "ew" or "vw"
-        title: plot title
-        path: output file path
-        start/end: optional date strings to subset the sample
-    """
+    """Single-panel cumulative return plot (2.5:1 aspect ratio)."""
     fig, ax = plt.subplots(figsize=(12.5, 5))
 
     sub = results.loc[start:end] if start or end else results
 
     all_dates = []
     for col, color, ls, lw, lbl in [
-        (f"{pfx}_long",       "steelblue", "--",  1.4, "Value (Top 10%)"),
-        (f"{pfx}_short",      "firebrick", ":",   1.4, "Growth (Bottom 10%)"),
-        (f"{pfx}_long_short", "black",     "-",   1.8, "Value$-$Growth"),
+        (f"{pfx}_long",       "steelblue", "--",  1.4, "Winners (Top 10%)"),
+        (f"{pfx}_short",      "firebrick", ":",   1.4, "Losers (Bottom 10%)"),
+        (f"{pfx}_long_short", "black",     "-",   1.8, "Winners$-$Losers"),
     ]:
         s = sub[col].dropna()
         cum = (1 + s).cumprod()
@@ -379,73 +331,24 @@ def plot_cumulative(results, pfx, title, path, start=None, end=None):
 
 
 # =====================================================================
-# VALUATION RATIO PLOT
-# =====================================================================
-def plot_valuation_ratio(merged, path):
-    """
-    Plot the relative valuation ratio over time:
-    VW-avg B/M in growth decile (bottom) / VW-avg B/M in value decile (top).
-    Line falling = value spread widening = value-growth strategy underperforming.
-    """
-    extremes = merged[merged["decile"].isin([1, N_QUANTILES])].copy()
-    extremes["wt_bm"] = extremes["lag_mktcap"] * extremes[SIGNAL_COL]
-
-    agg = (extremes.groupby(["month", "decile"])[["wt_bm", "lag_mktcap"]]
-           .sum().reset_index())
-    agg["vw_bm"] = agg["wt_bm"] / agg["lag_mktcap"]
-
-    value  = agg[agg["decile"] == N_QUANTILES].set_index("month")["vw_bm"]
-    growth = agg[agg["decile"] == 1].set_index("month")["vw_bm"]
-    ratio  = (growth / value).dropna()
-
-    fig, ax = plt.subplots(figsize=(12.5, 5))
-    ax.plot(ratio.index, ratio.values, color="black", linewidth=1.2)
-    ax.set_ylim(bottom=0)
-    ax.set_xlim(ratio.index.min(), ratio.index.max())
-    ax.set_title("Relative Valuation Ratio: VW Avg B/M (Growth / Value)", fontsize=14)
-    ax.set_ylabel("B/M Ratio (Growth Decile / Value Decile)")
-    ax.set_xlabel("")
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    fig.savefig(path, dpi=PLOT_DPI)
-    plt.close(fig)
-    print(f"  Plot saved: {path}")
-
-
-# =====================================================================
 # MAIN
 # =====================================================================
 def main():
     t0 = time.time()
 
     print("Loading data ...")
-    comp, crsp, ff = load_data()
+    crsp, ff = load_data()
     print(f"  loaded in {time.time()-t0:.1f}s")
-
-    # Build December ME lookup: for each PERMNO and calendar year,
-    # mktcap in December
-    print("Preparing December ME lookup ...")
-    crsp_tmp = crsp.copy()
-    crsp_tmp["date"] = pd.to_datetime(crsp_tmp["date"])
-    crsp_tmp["abs_prc"] = crsp_tmp["PRC"].abs()
-    crsp_tmp["mktcap"]  = crsp_tmp["abs_prc"] * crsp_tmp["SHROUT"]
-    crsp_tmp = crsp_tmp[crsp_tmp["date"].dt.month == 12].copy()
-    crsp_tmp["dec_year"] = crsp_tmp["date"].dt.year
-    dec_me = (crsp_tmp.groupby(["PERMNO", "dec_year"])["mktcap"]
-              .last().reset_index())
-    dec_me.rename(columns={"mktcap": "me_dec"}, inplace=True)
-    dec_me.dropna(subset=["me_dec"], inplace=True)
-    dec_me = dec_me[dec_me["me_dec"] > 0]
-
-    print("Building annual B/M signal (FF methodology) ...")
-    sig = build_signal(comp, dec_me)
-    print(f"  {len(sig):,} firm-year signals")
 
     print("Cleaning CRSP ...")
     crsp = clean_crsp(crsp)
 
-    print("Assigning annual portfolios (June formation, NYSE breaks) ...")
-    merged = assign_portfolios(sig, crsp)
+    print("Building momentum signal (prior 2-12 month returns) ...")
+    crsp = build_signal(crsp)
+    print(f"  {crsp[SIGNAL_COL].notna().sum():,} stock-month signals")
+
+    print("Assigning monthly portfolios (NYSE breakpoints) ...")
+    merged = assign_portfolios(crsp)
     print(f"  {len(merged):,} obs | "
           f"{merged['PERMNO'].nunique():,} stocks | "
           f"{merged['month'].nunique()} months")
@@ -473,20 +376,18 @@ def main():
 
     output_results(results, metrics)
 
-    # --- Slide-ready plots (2.5:1 aspect ratio) ---
+    # --- Slide-ready plots ---
     print("\nGenerating plots ...")
     plot_cumulative(results, "ew",
-                    "Book-to-Market Strategy — Equal-Weighted (Full Sample)",
+                    "Momentum Strategy — Equal-Weighted (Full Sample)",
                     DATA_DIR / f"{SIGNAL_COL}_ew_full.png")
     plot_cumulative(results, "vw",
-                    "Book-to-Market Strategy — Value-Weighted (Full Sample)",
+                    "Momentum Strategy — Value-Weighted (Full Sample)",
                     DATA_DIR / f"{SIGNAL_COL}_vw_full.png")
     plot_cumulative(results, "vw",
-                    "Book-to-Market Strategy — Value-Weighted (2010–2025)",
+                    "Momentum Strategy — Value-Weighted (2010–2025)",
                     DATA_DIR / f"{SIGNAL_COL}_vw_2010_2025.png",
                     start="2010-01-01", end="2025-12-31")
-
-    plot_valuation_ratio(merged, DATA_DIR / f"{SIGNAL_COL}_valuation_ratio.png")
 
     print(f"Done in {time.time()-t0:.1f}s")
 
