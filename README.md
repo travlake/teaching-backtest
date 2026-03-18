@@ -1,12 +1,16 @@
 # Backtest Template
 
-A single-file backtesting framework for cross-sectional equity strategies, built for students at **McCombs School of Business** at The University of Texas at Austin.
+A backtesting framework for cross-sectional equity strategies, built for students at **McCombs School of Business** at The University of Texas at Austin.
 
 ## Overview
 
-This repository provides a ready-to-use pipeline for testing long-short trading signals based on accounting fundamentals. You describe the trading signal you want to test — in plain English — and your CLI coding agent (Claude Code or similar) handles all the code changes for you. No programming experience required.
+This repository provides two ready-to-use backtesting scripts:
 
-The framework handles portfolio formation (decile sorts), return computation (equal- and value-weighted), performance evaluation (CAPM alpha, Sharpe ratio, cumulative returns), and output generation automatically.
+- **`backtest_gp.py`** — A general-purpose template for testing long-short trading signals based on accounting fundamentals. You describe the trading signal you want to test — in plain English — and your CLI coding agent (Claude Code or similar) handles all the code changes for you. No programming experience required.
+
+- **`backtest_bm_ff.py`** — A Fama-French-style book-to-market value strategy that replicates the backtest results shown in Lecture 16. Use this to understand the classic value premium, or as a reference for how annual-rebalancing strategies are implemented.
+
+Both scripts handle portfolio formation (decile sorts), return computation (equal- and value-weighted), performance evaluation (CAPM alpha, Sharpe ratio, drawdowns), and output generation automatically.
 
 ## Getting Started
 
@@ -21,8 +25,10 @@ Your homework assignment contains a link to a zip file. Download and unzip it �
 The data files you need (from the zip) are:
 
 - `compustat_with_permno.parquet` — Compustat quarterly fundamentals
-- `crsp_m.dta` — CRSP monthly stock returns
+- `crsp_m.parquet` — CRSP monthly stock returns (preferred; includes exchange codes and delisting-adjusted returns)
 - `ff5_plus_mom.dta` — Fama-French factors
+
+If you have the older data delivery with `crsp_m.dta` instead, that's fine — `backtest_gp.py` auto-detects either format. (The FF-style script `backtest_bm_ff.py` requires the `.parquet` version for NYSE breakpoints.)
 
 ### 2. Install dependencies
 
@@ -30,7 +36,15 @@ Ask your agent:
 
 > "Install the Python dependencies needed to run backtest_gp.py."
 
-### 3. Implement your signal
+### 3. Replicate the Lecture 16 results
+
+To see the B/M value strategy from class:
+
+> "Run backtest_bm_ff.py and show me the results."
+
+This produces the same performance metrics and cumulative return plots shown in Lecture 16.
+
+### 4. Implement your own signal
 
 This is the core of the assignment. Describe the trading signal you want to test and ask your agent to implement it. For example:
 
@@ -38,26 +52,25 @@ This is the core of the assignment. Describe the trading signal you want to test
 
 The agent will modify `backtest_gp.py` for you — specifically the `build_signal()` function and the configuration block at the top of the file. You don't need to understand the code; just make sure you can describe the signal clearly.
 
-### 4. Run the backtest
+### 5. Run the backtest
 
 Ask your agent:
 
 > "Run the backtest."
 
-The agent will execute the script and show you the results. Output includes:
+Output includes:
+- A performance metrics table (returns, alpha, Sharpe, drawdowns, t-statistics)
+- CSV and TXT files with the metrics
+- PNG cumulative return plots
 
-- A performance metrics table (returns, alpha, t-statistics, Sharpe ratios)
-- A CSV and TXT file with the metrics
-- A PNG plot of cumulative returns over time
-
-### 5. Interpret and iterate
+### 6. Interpret and iterate
 
 Review the output with your agent. You can ask things like:
 
 > "What does the CAPM alpha tell us about this strategy?"
-> 
+>
 > "The long-short return is negative — does that mean I have the signal direction wrong?"
-> 
+>
 > "Can you flip the signal so that low values go in the long portfolio?"
 
 ## What You'll Learn
@@ -66,6 +79,8 @@ Review the output with your agent. You can ask things like:
 - The importance of avoiding look-ahead bias (publication lag, lagged price filters)
 - Decile portfolio sorts and cross-sectional signal analysis
 - CAPM alpha estimation and statistical inference on portfolio returns
+- The difference between equal-weighted and value-weighted portfolio returns
+- How methodological choices (breakpoints, rebalancing frequency, exchange filters) affect results
 
 ## Tips for Working with Your Agent
 
