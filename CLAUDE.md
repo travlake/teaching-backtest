@@ -4,7 +4,7 @@
 Backtesting framework for cross-sectional equity strategies using Compustat fundamentals and CRSP returns. Contains two backtest scripts:
 
 - **`backtest_gp.py`** — Template for testing Compustat-based signals (monthly rebalancing, all-stock breakpoints). Students modify `build_signal()` to test new signals.
-- **`backtest_bm_ff.py`** — Fama-French-style book-to-market strategy (annual June rebalancing, NYSE breakpoints, December ME). Replicates the value results shown in Lecture 16.
+- **`backtest_bm_ff.py`** — Fama-French-style book-to-market strategy (annual June rebalancing, NYSE breakpoints, December ME). Replicates the classic value premium results.
 
 ## File Structure
 - `backtest_gp.py` — general-purpose backtest template (config + all functions in one file)
@@ -27,6 +27,12 @@ STRATEGY_NAME   = "Your Strategy Name"
 SIGNAL_COL      = "your_signal"     # column name for your signal
 LAG_MONTHS      = 4                 # adjust if your signal has different publication lag
 ```
+
+### Optional: Enable transaction costs
+```python
+TRANSACTION_COST_BP = 10     # one-way cost in basis points (default 0 = off)
+```
+When `TRANSACTION_COST_BP > 0`, the script computes monthly portfolio turnover (fraction of names entering/exiting each leg) and deducts round-trip costs from returns. The output header reports average turnover and annualized cost drag for the long leg, short leg, and long-short.
 
 ### Step 2: Rewrite `build_signal(comp)`
 This is the **only function you need to change**. It receives cleaned Compustat data and must return a DataFrame with exactly these columns:
@@ -111,6 +117,8 @@ python backtest_bm_ff.py
 5. **Signal direction**: Higher signal values go into the long leg (top decile). If your signal is "bad" when high (e.g., leverage), negate it in `build_signal()`.
 
 6. **NYSE breakpoints**: `backtest_bm_ff.py` uses NYSE-only breakpoints to avoid letting tiny NASDAQ stocks drive the decile cutoffs. This requires the `EXCHCD` column (only in `crsp_m.parquet`).
+
+7. **Transaction costs**: When `TRANSACTION_COST_BP > 0`, turnover-based costs are subtracted from portfolio returns. Costs apply to both legs of long-short (long leg cost + short leg cost). Turnover is measured by name-based entry/exit, not weight changes, so it approximates equal-weighted rebalancing cost. Set to 0 (default) for gross-of-cost results.
 
 ## Verification Checklist
 After implementing a new signal:

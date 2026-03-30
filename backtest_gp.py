@@ -33,6 +33,7 @@ LAG_MONTHS      = 4          # months after fiscal quarter end before signal is 
 MIN_PRICE       = 3          # lagged price filter ($)
 N_QUANTILES     = 10         # number of portfolio bins (10 = deciles)
 STALENESS_DAYS  = 365        # drop signal if older than this
+TRANSACTION_COST_BP = 0      # one-way transaction cost in basis points (0 = no cost)
 
 
 # =====================================================================
@@ -202,8 +203,56 @@ def compute_portfolio_returns(merged):
     vw = vw_agg["vw"].unstack("port")
     merged.drop(columns="wt_ret", inplace=True)
 
+    # --- Turnover & transaction costs ---
+    turnover_long = pd.Series(dtype=float)
+    turnover_short = pd.Series(dtype=float)
+    if TRANSACTION_COST_BP > 0:
+        months = sorted(merged["month"].unique())
+        prev_long = set()
+        prev_short = set()
+        to_long = {}
+        to_short = {}
+        for m in months:
+            cur = merged[merged["month"] == m]
+            cur_long = set(cur.loc[cur["port"] == "long", "PERMNO"])
+            cur_short = set(cur.loc[cur["port"] == "short", "PERMNO"])
+            if prev_long:
+                entered = len(cur_long - prev_long)
+                exited = len(prev_long - cur_long)
+                avg_size = (len(cur_long) + len(prev_long)) / 2
+                to_long[m] = (entered + exited) / (2 * avg_size) if avg_size > 0 else 0
+            else:
+                to_long[m] = 0  # first month: no turnover
+            if prev_short:
+                entered = len(cur_short - prev_short)
+                exited = len(prev_short - cur_short)
+                avg_size = (len(cur_short) + len(prev_short)) / 2
+                to_short[m] = (entered + exited) / (2 * avg_size) if avg_size > 0 else 0
+            else:
+                to_short[m] = 0
+            prev_long = cur_long
+            prev_short = cur_short
+        turnover_long = pd.Series(to_long)
+        turnover_short = pd.Series(to_short)
+        # Cost = turnover * 2 (buy+sell) * cost_per_trade
+        cost_per_trade = TRANSACTION_COST_BP / 10_000
+        cost_long = turnover_long * 2 * cost_per_trade
+        cost_short = turnover_short * 2 * cost_per_trade
+
     ew["long_short"] = ew["long"] - ew["short"]
     vw["long_short"] = vw["long"] - vw["short"]
+
+    # Apply transaction costs (same turnover for EW and VW since it's name-based)
+    # Each leg's return is reduced by its own turnover cost.
+    # Long-short = (long - cost_long) - (short + cost_short)
+    #   The short-seller pays cost_short on top of funding the short position.
+    if TRANSACTION_COST_BP > 0:
+        cl = cost_long.reindex(ew.index).fillna(0)
+        cs = cost_short.reindex(ew.index).fillna(0)
+        for src in [ew, vw]:
+            src["long"] = src["long"] - cl
+            src["short"] = src["short"]       # short-leg stock return unchanged
+            src["long_short"] = src["long_short"] - cl - cs
 
     results = pd.DataFrame(index=ew.index)
     results.index.name = "date"
@@ -211,6 +260,11 @@ def compute_portfolio_returns(merged):
         for col in ["long", "short", "long_short"]:
             results[f"{pfx}_{col}"] = src[col]
     results.dropna(how="all", inplace=True)
+
+    # Attach turnover info to results for output
+    if TRANSACTION_COST_BP > 0:
+        results.attrs["turnover_long"] = turnover_long.reindex(results.index).fillna(0)
+        results.attrs["turnover_short"] = turnover_short.reindex(results.index).fillna(0)
     return results
 
 
@@ -310,12 +364,24 @@ def output_results(results, metrics):
     display = fmt_table(metrics)
 
     sep = "=" * 100
+    tc_line = ""
+    if TRANSACTION_COST_BP > 0 and "turnover_long" in results.attrs:
+        avg_to_l = results.attrs["turnover_long"].mean()
+        avg_to_s = results.attrs["turnover_short"].mean()
+        cost_per_trade = TRANSACTION_COST_BP / 10_000
+        drag_l = avg_to_l * 2 * cost_per_trade * 12
+        drag_s = avg_to_s * 2 * cost_per_trade * 12
+        drag_ls = drag_l + drag_s
+        tc_line = (f"Transaction cost: {TRANSACTION_COST_BP} bp one-way   |   "
+                   f"Avg monthly turnover: Long {avg_to_l:.1%}, Short {avg_to_s:.1%}   |   "
+                   f"Ann. cost drag: L {drag_l:.2%}, S {drag_s:.2%}, L/S {drag_ls:.2%}\n")
     header = (f"\n{sep}\n"
               f"{STRATEGY_NAME.upper()} BACKTEST\n"
               f"Signal: {SIGNAL_COL}   |   "
               f"Lag: datadate + {LAG_MONTHS} months\n"
               f"Universe: SHRCD 10/11, lagged |PRC| > ${MIN_PRICE}   |   "
               f"Breakpoints: all-stock {N_QUANTILES}-tiles   |   Rebalancing: monthly\n"
+              f"{tc_line}"
               f"{sep}")
 
     print(header)

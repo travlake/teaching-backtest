@@ -8,7 +8,7 @@ This repository provides two ready-to-use backtesting scripts:
 
 - **`backtest_gp.py`** — A general-purpose template for testing long-short trading signals based on accounting fundamentals. You describe the trading signal you want to test — in plain English — and your CLI coding agent (Claude Code or similar) handles all the code changes for you. No programming experience required.
 
-- **`backtest_bm_ff.py`** — A Fama-French-style book-to-market value strategy that replicates the backtest results shown in Lecture 16. Use this to understand the classic value premium, or as a reference for how annual-rebalancing strategies are implemented.
+- **`backtest_bm_ff.py`** — A Fama-French-style book-to-market value strategy that replicates the classic value premium results. Use this to understand the value factor, or as a reference for how annual-rebalancing strategies are implemented.
 
 Both scripts handle portfolio formation (decile sorts), return computation (equal- and value-weighted), performance evaluation (CAPM alpha, Sharpe ratio, drawdowns), and output generation automatically.
 
@@ -38,11 +38,11 @@ Ask your agent:
 
 ### 3. Replicate the Lecture 16 results
 
-To see the B/M value strategy from class:
+To see the classic B/M value strategy:
 
 > "Run backtest_bm_ff.py and show me the results."
 
-This produces the same performance metrics and cumulative return plots shown in Lecture 16.
+This produces performance metrics and cumulative return plots for the Fama-French value factor.
 
 ### 4. Implement your own signal
 
