@@ -36,7 +36,7 @@ Ask your agent:
 
 > "Install the Python dependencies needed to run backtest_gp.py."
 
-### 3. Replicate the Lecture 16 results
+### 3. Replicate the Fama-French value results
 
 To see the classic B/M value strategy:
 
